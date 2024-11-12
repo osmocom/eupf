@@ -22,10 +22,10 @@
 
 #include "xdp/sdf_filter.h"
 
-#define PDR_MAP_TEID_IPV4_SIZE 1024
-#define PDR_MAP_DOWNLINK_IPV4_SIZE 1024
-#define PDR_MAP_DOWNLINK_IPV6_SIZE 1024
-#define FAR_MAP_SIZE 1024
+#define PDR_MAP_TEID_IPV4_SIZE 400000
+#define PDR_MAP_DOWNLINK_IPV4_SIZE 200000
+#define PDR_MAP_DOWNLINK_IPV6_SIZE 200000
+#define FAR_MAP_SIZE 400000
 
 
 enum outer_header_removal_values {
