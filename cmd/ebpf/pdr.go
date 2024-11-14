@@ -180,12 +180,12 @@ func (bpfObjects *BpfObjects) NewFar(farInfo FarInfo) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	log.Debug().Msgf("EBPF: Put FAR: internalId=%d, qerInfo=%+v", internalId, farInfo)
+	log.Info().Msgf("EBPF: Put FAR: internalId=%d, farInfo=%+v", internalId, farInfo)
 	return internalId, bpfObjects.FarMap.Put(internalId, unsafe.Pointer(&farInfo))
 }
 
 func (bpfObjects *BpfObjects) UpdateFar(internalId uint32, farInfo FarInfo) error {
-	log.Debug().Msgf("EBPF: Update FAR: internalId=%d, farInfo=%+v", internalId, farInfo)
+	log.Info().Msgf("EBPF: Update FAR: internalId=%d, farInfo=%+v", internalId, farInfo)
 	return bpfObjects.FarMap.Update(internalId, unsafe.Pointer(&farInfo), ebpf.UpdateExist)
 }
 
