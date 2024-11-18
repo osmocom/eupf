@@ -36,6 +36,9 @@ func (pdrContext *PDRCreationContext) extractPDR(pdr *ie.IE, spdrInfo *SPDRInfo)
 	if qerid, err := pdr.QERID(); err == nil {
 		spdrInfo.PdrInfo.QerId = pdrContext.getQERID(qerid)
 	}
+	if urrid, err := pdr.URRID(); err == nil {
+		spdrInfo.PdrInfo.UrrId = pdrContext.getURRID(urrid)
+	}
 
 	pdi, err := pdr.PDI()
 	if err != nil {
@@ -135,6 +138,10 @@ func (pdrContext *PDRCreationContext) getFARID(farid uint32) uint32 {
 
 func (pdrContext *PDRCreationContext) getQERID(qerid uint32) uint32 {
 	return pdrContext.Session.GetQer(qerid).GlobalId
+}
+
+func (pdrContext *PDRCreationContext) getURRID(urrid uint32) uint32 {
+	return pdrContext.Session.GetUrr(urrid).GlobalId
 }
 
 func (pdrContext *PDRCreationContext) getFTEID(seID uint64, pdrID uint32) (uint32, error) {

@@ -15,6 +15,7 @@ type PdrElement struct {
 	OuterHeaderRemoval uint8  `json:"outer_header_removal"`
 	FarId              uint32 `json:"far_id"`
 	QerId              uint32 `json:"qer_id"`
+	UrrId              uint32 `json:"urr_id"`
 }
 
 func (h *ApiHandler) getUplinkPdrValue(c *gin.Context) {
@@ -37,6 +38,7 @@ func (h *ApiHandler) getUplinkPdrValue(c *gin.Context) {
 		OuterHeaderRemoval: value.OuterHeaderRemoval,
 		FarId:              value.FarId,
 		QerId:              value.QerId,
+		UrrId:              value.UrrId,
 	})
 }
 
@@ -51,6 +53,7 @@ func (h *ApiHandler) setUplinkPdrValue(c *gin.Context) {
 		OuterHeaderRemoval: pdrElement.OuterHeaderRemoval,
 		FarId:              pdrElement.FarId,
 		QerId:              pdrElement.QerId,
+		UrrId:              pdrElement.UrrId,
 	}
 
 	if err := h.BpfObjects.IpEntrypointObjects.PdrMapUplinkIp4.Put(uint32(pdrElement.Id), unsafe.Pointer(&value)); err != nil {

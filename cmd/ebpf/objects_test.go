@@ -171,14 +171,18 @@ func testGtpWithPDRBenchmark(bpfObjects *BpfObjects, repeat int) (int64, error) 
 		return 0, fmt.Errorf("serializing input packet failed: %v", err)
 	}
 
-	pdr := PdrInfo{OuterHeaderRemoval: 0, FarId: 1, QerId: 1}
+	pdr := PdrInfo{OuterHeaderRemoval: 0, FarId: 1, QerId: 1, UrrId: 1}
 	far := FarInfo{Action: 2, OuterHeaderCreation: 1, RemoteIP: 1, LocalIP: 2, Teid: 2, TransportLevelMarking: 0}
 	qer := QerInfo{GateStatusUL: 0, GateStatusDL: 0, Qfi: 0, MaxBitrateUL: 1000000, MaxBitrateDL: 100000, StartUL: 0, StartDL: 0}
+	urr := UrrInfo{MeasMethod: 1, RepTri5: 2, RepTri6: 1, MeasInfo: 17}
 
 	if err := bpfObjects.FarMap.Put(uint32(1), unsafe.Pointer(&far)); err != nil {
 		return 0, fmt.Errorf("benchmark run failed: %v", err)
 	}
 	if err := bpfObjects.QerMap.Put(uint32(1), unsafe.Pointer(&qer)); err != nil {
+		return 0, fmt.Errorf("benchmark run failed: %v", err)
+	}
+	if err := bpfObjects.UrrInfoMap.Put(uint32(1), unsafe.Pointer(&urr)); err != nil {
 		return 0, fmt.Errorf("benchmark run failed: %v", err)
 	}
 	if err := bpfObjects.PdrMapUplinkIp4.Put(teid, unsafe.Pointer(&pdr)); err != nil {
@@ -295,10 +299,11 @@ func testGtpWithSDFFilter(bpfObjects *BpfObjects) error {
 		return fmt.Errorf("serializing input packet failed: %v", err)
 	}
 
-	pdr := PdrInfo{OuterHeaderRemoval: 0, FarId: 1, QerId: 1}
+	pdr := PdrInfo{OuterHeaderRemoval: 0, FarId: 1, QerId: 1, UrrId: 1}
 	farForward := FarInfo{Action: 2, OuterHeaderCreation: 1, RemoteIP: 1, LocalIP: 2, Teid: 2, TransportLevelMarking: 0}
 	farDrop := FarInfo{Action: 1, OuterHeaderCreation: 1, RemoteIP: 1, LocalIP: 2, Teid: 2, TransportLevelMarking: 0}
 	qer := QerInfo{GateStatusUL: 0, GateStatusDL: 0, Qfi: 0, MaxBitrateUL: 1000000, MaxBitrateDL: 100000, StartUL: 0, StartDL: 0}
+	urr := UrrInfo{MeasMethod: 1, RepTri5: 2, RepTri6: 1, MeasInfo: 17}
 
 	if err := bpfObjects.FarMap.Put(uint32(1), unsafe.Pointer(&farForward)); err != nil {
 		return fmt.Errorf("can't set FAR: %v", err)
@@ -308,6 +313,9 @@ func testGtpWithSDFFilter(bpfObjects *BpfObjects) error {
 	}
 	if err := bpfObjects.QerMap.Put(uint32(1), unsafe.Pointer(&qer)); err != nil {
 		return fmt.Errorf("can't set QER: %v", err)
+	}
+	if err := bpfObjects.UrrInfoMap.Put(uint32(1), unsafe.Pointer(&urr)); err != nil {
+		return fmt.Errorf("can't set URR: %v", err)
 	}
 
 	if err := bpfObjects.PutPdrUplink(teid, pdr); err != nil {
@@ -366,7 +374,7 @@ func testGtpExtHeader(bpfObjects *BpfObjects) error {
 		return fmt.Errorf("serializing input packet failed: %v", err)
 	}
 
-	pdr := PdrInfo{OuterHeaderRemoval: 0, FarId: 1, QerId: 1}
+	pdr := PdrInfo{OuterHeaderRemoval: 0, FarId: 1, QerId: 1, UrrId: 1}
 	farForward := FarInfo{
 		Action:                2,
 		OuterHeaderCreation:   1,
@@ -375,12 +383,16 @@ func testGtpExtHeader(bpfObjects *BpfObjects) error {
 		Teid:                  teid,
 		TransportLevelMarking: 0}
 	qer := QerInfo{GateStatusUL: 0, GateStatusDL: 0, Qfi: 5, MaxBitrateUL: 1000000, MaxBitrateDL: 100000, StartUL: 0, StartDL: 0}
+	urr := UrrInfo{MeasMethod: 1, RepTri5: 2, RepTri6: 1, MeasInfo: 17}
 
 	if err := bpfObjects.FarMap.Put(uint32(1), unsafe.Pointer(&farForward)); err != nil {
 		return fmt.Errorf("can't set FAR: %v", err)
 	}
 	if err := bpfObjects.QerMap.Put(uint32(1), unsafe.Pointer(&qer)); err != nil {
 		return fmt.Errorf("can't set QER: %v", err)
+	}
+	if err := bpfObjects.UrrMap.Put(uint32(1), unsafe.Pointer(&urr)); err != nil {
+		return fmt.Errorf("can't set URR: %v", err)
 	}
 
 	if err := bpfObjects.PutPdrDownlink(net.IP{10, 60, 0, 1}, pdr); err != nil {

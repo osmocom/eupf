@@ -24,6 +24,7 @@ type PfcpConnection struct {
 	mapOperations     ebpf.ForwardingPlaneController
 	RecoveryTimestamp time.Time
 	ResourceManager   *service.ResourceManager
+	ReportManager     *PfcpReportManager
 }
 
 func (connection *PfcpConnection) GetAssociation(assocAddr string) *NodeAssociation {
@@ -33,7 +34,7 @@ func (connection *PfcpConnection) GetAssociation(assocAddr string) *NodeAssociat
 	return nil
 }
 
-func CreatePfcpConnection(addr string, pfcpHandlerMap PfcpHandlerMap, nodeId string, n3Ip string, mapOperations ebpf.ForwardingPlaneController, resourceManager *service.ResourceManager) (*PfcpConnection, error) {
+func CreatePfcpConnection(addr string, pfcpHandlerMap PfcpHandlerMap, nodeId string, n3Ip string, mapOperations ebpf.ForwardingPlaneController, resourceManager *service.ResourceManager, reportManager *PfcpReportManager) (*PfcpConnection, error) {
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		log.Warn().Msgf("Can't resolve UDP address: %s", err.Error())
@@ -61,6 +62,7 @@ func CreatePfcpConnection(addr string, pfcpHandlerMap PfcpHandlerMap, nodeId str
 		mapOperations:     mapOperations,
 		RecoveryTimestamp: time.Now(),
 		ResourceManager:   resourceManager,
+		ReportManager:     reportManager,
 	}, nil
 }
 
@@ -142,6 +144,10 @@ func (connection *PfcpConnection) DeleteSession(session *Session) {
 	}
 	for _, qer := range session.QERs {
 		_ = connection.mapOperations.DeleteQer(qer.GlobalId)
+	}
+	for _, urr := range session.URRs {
+		_ = connection.mapOperations.DeleteUrr(urr.GlobalId)
+		connection.ReportManager.DeleteUrr(urr.GlobalId)
 	}
 	pdrContext := NewPDRCreationContext(session, connection.ResourceManager)
 	for _, PDR := range session.PDRs {

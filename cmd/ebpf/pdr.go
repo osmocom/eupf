@@ -18,6 +18,7 @@ type PdrInfo struct {
 	OuterHeaderRemoval uint8
 	FarId              uint32
 	QerId              uint32
+	UrrId              uint32
 	SdfFilter          *SdfFilter
 }
 
@@ -178,7 +179,7 @@ func (bpfObjects *BpfObjects) NewFar(farInfo FarInfo) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	log.Debug().Msgf("EBPF: Put FAR: internalId=%d, qerInfo=%+v", internalId, farInfo)
+	log.Debug().Msgf("EBPF: Put FAR: internalId=%d, farInfo=%+v", internalId, farInfo)
 	return internalId, bpfObjects.FarMap.Put(internalId, unsafe.Pointer(&farInfo))
 }
 
@@ -187,10 +188,10 @@ func (bpfObjects *BpfObjects) UpdateFar(internalId uint32, farInfo FarInfo) erro
 	return bpfObjects.FarMap.Update(internalId, unsafe.Pointer(&farInfo), ebpf.UpdateExist)
 }
 
-func (bpfObjects *BpfObjects) DeleteFar(intenalId uint32) error {
-	log.Debug().Msgf("EBPF: Delete FAR: intenalId=%d", intenalId)
-	bpfObjects.FarIdTracker.Release(intenalId)
-	return bpfObjects.FarMap.Update(intenalId, unsafe.Pointer(&FarInfo{}), ebpf.UpdateExist)
+func (bpfObjects *BpfObjects) DeleteFar(internalId uint32) error {
+	log.Debug().Msgf("EBPF: Delete FAR: internalId=%d", internalId)
+	bpfObjects.FarIdTracker.Release(internalId)
+	return bpfObjects.FarMap.Update(internalId, unsafe.Pointer(&FarInfo{}), ebpf.UpdateExist)
 }
 
 type QerInfo struct {
@@ -223,6 +224,91 @@ func (bpfObjects *BpfObjects) DeleteQer(internalId uint32) error {
 	return bpfObjects.QerMap.Update(internalId, unsafe.Pointer(&QerInfo{}), ebpf.UpdateExist)
 }
 
+type UrrInfo struct {
+	MeasMethod		uint8
+	RepTri5			uint8
+	RepTri6			uint8
+	RepTri7			uint8
+	MeasInfo		uint8
+	VolThresholdFlags	uint8
+	VolQuotaFlags		uint8
+	ReportSent		uint8	// 0=XDP report pending, 1=XDP report sent, 2=report sent by host
+	VolThresholdTotal 	uint64
+	VolThresholdUplink 	uint64
+	VolThresholdDownlink	uint64
+	VolQuotaTotal		uint64
+	VolQuotaUplink		uint64
+	VolQuotaDownlink	uint64
+	TimeThreshold		uint32	// in milliseconds, 0 for none
+	TimeQuota		uint32	// in milliseconds, 0 for none
+	QuotaValidity		uint32	// in milliseconds, 0 for none
+	QuotaHolding		uint32	// in milliseconds, 0 for none
+}
+
+type UrrAcc struct {
+	TotalOctets		uint64
+	UlOctets		uint64
+	DlOctets		uint64
+	TotalPkts		uint64
+	UlPkts			uint64
+	DlPkts			uint64
+	KTimeFirstPktNs		uint64
+	KTimeLastPktNs		uint64
+}
+
+type UrrRep struct {
+	Type			uint8
+	UsageTrigger5		uint8
+	UsageTrigger6		uint8
+	UsageTrigger7		uint8
+	Id			uint32
+	TotalOctets		uint64
+	UlOctets		uint64
+	DlOctets		uint64
+	TotalPkts		uint64
+	UlPkts			uint64
+	DlPkts			uint64
+	KTimeFirstPktNs		uint64
+	KTimeLastPktNs		uint64
+};
+
+func (bpfObjects *BpfObjects) NewUrr(urrInfo UrrInfo) (uint32, error) {
+	internalId, err := bpfObjects.UrrIdTracker.GetNext()
+	if err != nil {
+		return 0, err
+	}
+	log.Debug().Msgf("EBPF: Put URR: internalId=%d, urrInfo=%+v", internalId, urrInfo)
+	// creating new URR, make sure urrAcc also exists and initialized to 0
+	urrAcc := UrrAcc{}
+	if err = bpfObjects.UrrAccMap.Put(internalId, unsafe.Pointer(&urrAcc)); err != nil {
+		return internalId, err
+	}
+	return internalId, bpfObjects.UrrInfoMap.Put(internalId, unsafe.Pointer(&urrInfo))
+}
+
+func (bpfObjects *BpfObjects) UpdateUrr(internalId uint32, urrInfo UrrInfo, urrAcc UrrAcc) error {
+	// BPF traffic counter are cumulative (the never go down) => the limit in UrrInfoMap must be cumulative
+	// read the current map and add the limits to it
+	// Logic : new quota is counted from previous usage report, which is stored in UrrAcc
+	urrInfo.VolQuotaTotal += urrAcc.TotalOctets
+	urrInfo.VolThresholdTotal += urrAcc.TotalOctets
+	urrInfo.VolQuotaUplink += urrAcc.UlOctets
+	urrInfo.VolThresholdUplink += urrAcc.UlOctets
+	urrInfo.VolQuotaDownlink += urrAcc.DlOctets
+	urrInfo.VolThresholdDownlink += urrAcc.DlOctets
+	// reset ReportSent to open BPF reporting
+	// During the interval that ReportSent = 1, BPF has continued to accumulate counters as long as quota is not exceeded
+	urrInfo.ReportSent = 0
+	log.Debug().Msgf("EBPF: Update URR: internalId=%d, urrInfo=%+v", internalId, urrInfo)
+	return bpfObjects.UrrInfoMap.Update(internalId, unsafe.Pointer(&urrInfo), ebpf.UpdateExist)
+}
+
+func (bpfObjects *BpfObjects) DeleteUrr(internalId uint32) error {
+	log.Debug().Msgf("EBPF: Delete URR: internalId=%d", internalId)
+	bpfObjects.UrrIdTracker.Release(internalId)
+	return bpfObjects.UrrInfoMap.Update(internalId, unsafe.Pointer(&UrrInfo{}), ebpf.UpdateExist)
+}
+
 type ForwardingPlaneController interface {
 	PutPdrUplink(teid uint32, pdrInfo PdrInfo) error
 	PutPdrDownlink(ipv4 net.IP, pdrInfo PdrInfo) error
@@ -239,6 +325,9 @@ type ForwardingPlaneController interface {
 	NewQer(qerInfo QerInfo) (uint32, error)
 	UpdateQer(internalId uint32, qerInfo QerInfo) error
 	DeleteQer(internalId uint32) error
+	NewUrr(urrInfo UrrInfo) (uint32, error)
+	UpdateUrr(internalId uint32, urrInfo UrrInfo, urrAcc UrrAcc) error
+	DeleteUrr(internalId uint32) error
 }
 
 func CombinePdrWithSdf(defaultPdr *IpEntrypointPdrInfo, sdfPdr PdrInfo) IpEntrypointPdrInfo {
@@ -248,6 +337,7 @@ func CombinePdrWithSdf(defaultPdr *IpEntrypointPdrInfo, sdfPdr PdrInfo) IpEntryp
 		pdrToStore.OuterHeaderRemoval = defaultPdr.OuterHeaderRemoval
 		pdrToStore.FarId = defaultPdr.FarId
 		pdrToStore.QerId = defaultPdr.QerId
+		pdrToStore.UrrId = defaultPdr.UrrId
 		pdrToStore.SdfMode = 2
 	} else {
 		pdrToStore.SdfMode = 1
@@ -268,6 +358,7 @@ func CombinePdrWithSdf(defaultPdr *IpEntrypointPdrInfo, sdfPdr PdrInfo) IpEntryp
 	pdrToStore.SdfRules.OuterHeaderRemoval = sdfPdr.OuterHeaderRemoval
 	pdrToStore.SdfRules.FarId = sdfPdr.FarId
 	pdrToStore.SdfRules.QerId = sdfPdr.QerId
+	pdrToStore.SdfRules.UrrId = sdfPdr.UrrId
 	return pdrToStore
 }
 
@@ -276,6 +367,7 @@ func ToIpEntrypointPdrInfo(defaultPdr PdrInfo) IpEntrypointPdrInfo {
 	pdrToStore.OuterHeaderRemoval = defaultPdr.OuterHeaderRemoval
 	pdrToStore.FarId = defaultPdr.FarId
 	pdrToStore.QerId = defaultPdr.QerId
+	pdrToStore.UrrId = defaultPdr.UrrId
 	return pdrToStore
 }
 

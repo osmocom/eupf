@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"unsafe"
 
 	"github.com/RoaringBitmap/roaring"
 	"github.com/edgecomllc/eupf/cmd/config"
@@ -30,12 +31,14 @@ type BpfObjects struct {
 
 	FarIdTracker *IdTracker
 	QerIdTracker *IdTracker
+	UrrIdTracker *IdTracker
 }
 
 func NewBpfObjects() *BpfObjects {
 	return &BpfObjects{
-		FarIdTracker: NewIdTracker(config.Conf.FarMapSize),
-		QerIdTracker: NewIdTracker(config.Conf.QerMapSize),
+		FarIdTracker: NewIdTracker(0, config.Conf.FarMapSize),
+		QerIdTracker: NewIdTracker(0, config.Conf.QerMapSize),
+		UrrIdTracker: NewIdTracker(1, config.Conf.UrrMapSize),
 	}
 }
 
@@ -56,8 +59,16 @@ func (bpfObjects *BpfObjects) Load() error {
 		},
 	}
 
-	return LoadAllObjects(&collectionOptions,
-		Loader{LoadIpEntrypointObjects, &bpfObjects.IpEntrypointObjects})
+	if err := LoadAllObjects(&collectionOptions,
+		Loader{LoadIpEntrypointObjects, &bpfObjects.IpEntrypointObjects}); err != nil {
+		return err
+	}
+	// as URR are optional, preallocate a URR with globalID 0 initialized to URR disabled
+	urrInfo := UrrInfo{}
+	urrAcc := UrrAcc{}
+	bpfObjects.UrrInfoMap.Put(0, unsafe.Pointer(&urrInfo))
+	bpfObjects.UrrAccMap.Put(0, unsafe.Pointer(&urrAcc))
+	return nil;
 }
 
 func (bpfObjects *BpfObjects) Close() error {
@@ -140,7 +151,21 @@ func ResizeEbpfMap(eMap **ebpf.Map, eProg *ebpf.Program, newSize uint32) error {
 	return nil
 }
 
-func (bpfObjects *BpfObjects) ResizeAllMaps(qerMapSize uint32, farMapSize uint32, pdrMapSize uint32) error {
+func (bpfObjects *BpfObjects) ResizeAllMaps(urrMapSize uint32, qerMapSize uint32, farMapSize uint32, pdrMapSize uint32) error {
+	//URR
+	err := ResizeEbpfMap(&bpfObjects.UrrInfoMap, bpfObjects.UpfIpEntrypointFunc, urrMapSize)
+	if err == nil {
+		err = ResizeEbpfMap(&bpfObjects.UrrAccMap, bpfObjects.UpfIpEntrypointFunc, urrMapSize)
+	}
+	if err != nil {	
+		log.Info().Msgf("Failed to resize URR map: %s", err)
+		return err
+	}
+	// as URR are optional, preallocate a URR with globalID 0 initialized to URR disabled
+	urrInfo := UrrInfo{}
+	urrAcc := UrrAcc{}
+	bpfObjects.UrrInfoMap.Put(0, unsafe.Pointer(&urrInfo))
+	bpfObjects.UrrAccMap.Put(0, unsafe.Pointer(&urrAcc))
 	//QER
 	if err := ResizeEbpfMap(&bpfObjects.QerMap, bpfObjects.UpfIpEntrypointFunc, qerMapSize); err != nil {
 		log.Info().Msgf("Failed to resize QER map: %s", err)
@@ -175,9 +200,9 @@ type IdTracker struct {
 	maxSize uint32
 }
 
-func NewIdTracker(size uint32) *IdTracker {
+func NewIdTracker(first uint32, size uint32) *IdTracker {
 	newBitmap := roaring.NewBitmap()
-	newBitmap.Flip(0, uint64(size))
+	newBitmap.Flip(uint64(first), uint64(size))
 
 	return &IdTracker{
 		bitmap:  newBitmap,

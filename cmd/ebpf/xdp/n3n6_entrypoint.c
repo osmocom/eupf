@@ -28,6 +28,7 @@
 
 #include "xdp/program_array.h"
 #include "xdp/statistics.h"
+#include "xdp/urr.h"
 #include "xdp/qer.h"
 #include "xdp/pdr.h"
 #include "xdp/sdf_filter.h"
@@ -45,6 +46,82 @@
 #define DEFAULT_XDP_ACTION XDP_PASS
 
 
+static __always_inline enum xdp_action update_urr_volume_add(struct packet_context *ctx, __u32 urr_id, struct urr_info *urr, struct urr_acc *acc, const __u64 packet_size, __u8 is_uplink)
+{
+   enum xdp_action action = XDP_PASS;
+   __u8 ut5 = 0;
+   __u8 ut6 = 0;
+   __u64 too = acc->total_octets + packet_size;
+   __u64 top = acc->total_pkts + 1;
+   __u64 ulo = acc->ul_octets;
+   __u64 dlo = acc->dl_octets;
+   __u64 ulp = acc->ul_pkts;
+   __u64 dlp = acc->dl_pkts;
+   if (is_uplink) {
+      ulo += packet_size;
+      ulp++;
+   } else {
+      dlo += packet_size;
+      dlp++;
+   }
+   acc->ktime_last_pkt_ns = bpf_ktime_get_ns();
+   if (urr->report_sent == 2 || acc->ktime_first_pkt_ns == 0)
+      acc->ktime_first_pkt_ns = acc->ktime_last_pkt_ns;
+
+   if ((urr->reptri_6 & RT6_VOLUME_QUOTA) != 0 && (
+          ((urr->vol_quota_flags & VT_TOVOL) != 0 && too >= urr->vol_quota_total) ||
+          ((urr->vol_quota_flags & VT_ULVOL) != 0 && ulo >= urr->vol_quota_uplink) ||
+          ((urr->vol_quota_flags & VT_DLVOL) != 0 && dlo >= urr->vol_quota_downlink))) {
+      ut6 = UT6_VOLUME_QUOTA;
+      action = XDP_DROP;
+   }
+   if ((urr->reptri_5 & RT5_VOLUME_THRESHOLD) != 0 && (
+                 ((urr->vol_threshold_flags & VT_TOVOL) != 0 && too >= urr->vol_threshold_total) ||
+                 ((urr->vol_threshold_flags & VT_ULVOL) != 0 && ulo >= urr->vol_threshold_uplink) ||
+                 ((urr->vol_threshold_flags & VT_DLVOL) != 0 && dlo >= urr->vol_threshold_downlink))) {
+      ut5 = UT5_VOLUME_THRESHOLD;
+   }
+   if (action != XDP_DROP) {
+      acc->total_octets = too;
+      acc->ul_octets = ulo;
+      acc->dl_octets = dlo;
+      acc->total_pkts = top;
+      acc->ul_pkts = ulp;
+      acc->dl_pkts = dlp;
+   }
+   if ((ut5 || ut6) && !urr->report_sent) {
+      struct urr_rep rep = {};
+      int ret;
+      rep.type = RT_USAGE_REPORT;
+      rep.usage_tri_5 = ut5;
+      rep.usage_tri_6 = ut6;
+      rep.usage_tri_7 = 0;
+      rep.id = urr_id;
+      rep.total_octets = acc->total_octets;
+      rep.ul_octets = acc->ul_octets;
+      rep.dl_octets = acc->dl_octets;
+      rep.total_pkts = acc->total_pkts;
+      rep.ul_pkts = acc->ul_pkts;
+      rep.dl_pkts = acc->dl_pkts;
+      rep.ktime_first_pkt_ns = acc->ktime_first_pkt_ns;
+      rep.ktime_last_pkt_ns = acc->ktime_last_pkt_ns;
+      // now send rep
+      upf_printk("upf: urr:%d send report tri:%x too:%llu", urr_id, 256*ut5+ut6, rep.total_octets);
+      ret = bpf_perf_event_output(ctx->xdp_ctx, &urr_rep_map, BPF_F_CURRENT_CPU, &rep, sizeof(rep));
+      if (ret) {
+         upf_printk("upf: error sending usage report for URR id %d", urr_id);
+      } else {
+         // need a map update before we can send another event
+         // remember the total sent so that the host side can update the map correctly on next quota allocation
+         urr->report_sent = 1;
+         // reset for next data collection
+         acc->ktime_first_pkt_ns = 0;
+         acc->ktime_last_pkt_ns = 0;
+      }
+   }
+   return action;
+}
+
 static __always_inline enum xdp_action send_to_gtp_tunnel(struct packet_context *ctx, int srcip, int dstip, __u8 tos, __u8 qfi, int teid) {
     if (-1 == add_gtp_over_ip4_headers(ctx, srcip, dstip, tos, qfi, teid))
         return XDP_ABORTED;
@@ -52,8 +129,6 @@ static __always_inline enum xdp_action send_to_gtp_tunnel(struct packet_context 
     increment_counter(ctx->n3_n6_counter, tx_n3);
     return route_ipv4(ctx->xdp_ctx, ctx->eth, ctx->ip4);
 }
-
-
 
 static __always_inline __u16 handle_n6_packet_ipv4(struct packet_context *ctx) {
     const struct iphdr *ip4 = ctx->ip4;
@@ -65,6 +140,7 @@ static __always_inline __u16 handle_n6_packet_ipv4(struct packet_context *ctx) {
     
     __u32 far_id = pdr->far_id;
     __u32 qer_id = pdr->qer_id;
+    __u32 urr_id = pdr->urr_id;
     //__u8 outer_header_removal = pdr->outer_header_removal;
     if (pdr->sdf_mode) {
         struct sdf_filter *sdf = &pdr->sdf_rules.sdf_filter;
@@ -72,6 +148,7 @@ static __always_inline __u16 handle_n6_packet_ipv4(struct packet_context *ctx) {
             upf_printk("Packet with source ip:%pI4 and destination ip:%pI4 matches SDF filter", &ip4->saddr, &ip4->daddr);
             far_id = pdr->sdf_rules.far_id;
             qer_id = pdr->sdf_rules.qer_id;
+            urr_id = pdr->sdf_rules.urr_id;
             //outer_header_removal = pdr->sdf_rules.outer_header_removal;
         } else if(pdr->sdf_mode & 1) {
             return DEFAULT_XDP_ACTION;
@@ -94,6 +171,14 @@ static __always_inline __u16 handle_n6_packet_ipv4(struct packet_context *ctx) {
     if (!(far->outer_header_creation & OHC_GTP_U_UDP_IPv4))
         return XDP_DROP;
 
+    struct urr_info *urr = bpf_map_lookup_elem(&urr_info_map, &urr_id);
+    struct urr_acc *acc = bpf_map_lookup_elem(&urr_acc_map, &urr_id);
+    if (!urr || !acc) {
+        upf_printk("upf: no downlink session urr for ip:%pI4  urr:%d", &ip4->daddr, urr_id);
+        return XDP_DROP;
+    }
+    upf_printk("upf: urr:%d method:%d info:%d", urr_id, urr->meas_method, urr->meas_info);
+
     struct qer_info *qer = bpf_map_lookup_elem(&qer_map, &qer_id);  
     if (!qer) {
         upf_printk("upf: no downlink session qer for ip:%pI4 qer:%d", &ip4->daddr, qer_id);
@@ -102,12 +187,23 @@ static __always_inline __u16 handle_n6_packet_ipv4(struct packet_context *ctx) {
 
     upf_printk("upf: qer:%d gate_status:%d mbr:%d", qer_id, qer->dl_gate_status, qer->dl_maximum_bitrate);
 
+    const __u64 packet_size = ctx->xdp_ctx->data_end - ctx->xdp_ctx->data;
+
+    if ((urr->meas_method & MM_VOLUME) != 0 && (urr->meas_info & (MI_INAM|MI_MBQE)) == MI_MBQE) {
+       if (XDP_DROP == update_urr_volume_add(ctx, urr_id, urr, acc, packet_size, 0))
+          return XDP_DROP;
+    }
+    
     if (qer->dl_gate_status != GATE_STATUS_OPEN)
         return XDP_DROP;
 
-    const __u64 packet_size = ctx->xdp_ctx->data_end - ctx->xdp_ctx->data;
     if (XDP_DROP == limit_rate_sliding_window(packet_size, &qer->dl_start, qer->dl_maximum_bitrate))
         return XDP_DROP;
+
+    if ((urr->meas_method & MM_VOLUME) != 0 && (urr->meas_info & (MI_INAM|MI_MBQE)) == 0) {
+       if (XDP_DROP == update_urr_volume_add(ctx, urr_id, urr, acc, packet_size, 0))
+          return XDP_DROP;
+    }
 
     __u8 tos = far->transport_level_marking >> 8;
 
@@ -193,6 +289,7 @@ static __always_inline enum xdp_action handle_gtp_packet(struct packet_context *
 
     __u32 far_id = pdr->far_id;
     __u32 qer_id = pdr->qer_id;
+    __u32 urr_id = pdr->urr_id;
     __u8 outer_header_removal = pdr->outer_header_removal;
     
     if (pdr->sdf_mode) {
@@ -223,6 +320,7 @@ static __always_inline enum xdp_action handle_gtp_packet(struct packet_context *
                     upf_printk("upf: sdf filter matches teid:%d", teid);
                     far_id = pdr->sdf_rules.far_id;
                     qer_id = pdr->sdf_rules.qer_id;
+                    urr_id = pdr->sdf_rules.urr_id;
                     outer_header_removal = pdr->sdf_rules.outer_header_removal;
                 } else {
                     upf_printk("upf: sdf filter doesn't match teid:%d", teid);
@@ -249,6 +347,7 @@ static __always_inline enum xdp_action handle_gtp_packet(struct packet_context *
                     upf_printk("upf: sdf filter matches teid:%d", teid);
                     far_id = pdr->sdf_rules.far_id;
                     qer_id = pdr->sdf_rules.qer_id;
+                    urr_id = pdr->sdf_rules.urr_id;
                     outer_header_removal = pdr->sdf_rules.outer_header_removal;
                 } else {
                     upf_printk("upf: sdf filter doesn't match teid:%d", teid);
@@ -281,6 +380,18 @@ static __always_inline enum xdp_action handle_gtp_packet(struct packet_context *
         return XDP_DROP;
 
     /*
+     *   Step 2.5: search for URR and apply URR instructions
+     */
+    struct urr_info *urr = bpf_map_lookup_elem(&urr_info_map, &urr_id);
+    struct urr_acc *acc = bpf_map_lookup_elem(&urr_acc_map, &urr_id);
+    if (!urr || !acc) {
+        upf_printk("upf: no session urr for teid:%d urr:%d", teid, urr_id);
+        return XDP_DROP;
+    }
+    
+    upf_printk("upf: urr:%d method:%d info:%d", urr_id, urr->meas_method, urr->meas_info);
+       
+    /*
      *   Step 3: search for QER and apply QER instructions
      */
     struct qer_info *qer = bpf_map_lookup_elem(&qer_map, &qer_id);
@@ -288,16 +399,25 @@ static __always_inline enum xdp_action handle_gtp_packet(struct packet_context *
         upf_printk("upf: no session qer for teid:%d qer:%d", teid, qer_id);
         return XDP_DROP;
     }
-
     upf_printk("upf: qer:%d gate_status:%d mbr:%d", qer_id, qer->ul_gate_status, qer->ul_maximum_bitrate);
 
+    const __u64 packet_size = ctx->xdp_ctx->data_end - ctx->xdp_ctx->data;
+
+    if ((urr->meas_method & MM_VOLUME) != 0 && (urr->meas_info & (MI_INAM|MI_MBQE)) == MI_MBQE) {
+       if (XDP_DROP == update_urr_volume_add(ctx, urr_id, urr, acc, packet_size, 1))
+          return XDP_DROP;
+    }
     if (qer->ul_gate_status != GATE_STATUS_OPEN)
         return XDP_DROP;
 
-    const __u64 packet_size = ctx->xdp_ctx->data_end - ctx->xdp_ctx->data;
     if (XDP_DROP == limit_rate_sliding_window(packet_size, &qer->ul_start, qer->ul_maximum_bitrate))
         return XDP_DROP;
 
+    if ((urr->meas_method & MM_VOLUME) != 0 && (urr->meas_info & (MI_INAM|MI_MBQE)) == 0) {
+       if (XDP_DROP == update_urr_volume_add(ctx, urr_id, urr, acc, packet_size, 1))
+          return XDP_DROP;
+    }
+    
     upf_printk("upf: session for teid:%d far:%d outer_header_removal:%d", teid, pdr->far_id, outer_header_removal);
 
     // N9: Only outer header GTP/UDP/IPv4 is supported at the moment

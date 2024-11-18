@@ -97,3 +97,72 @@ func ListQerMapContents(m *ebpf.Map) ([]QerMapElement, error) {
 
 	return contextMap, nil
 }
+
+type UrrMapElement struct {
+	Id			uint32	`json:"id"`
+	MeasMethod		uint8	`json:"meas_method"`
+	MeasInfo		uint8	`json:"meas_info"`
+	ReportTrigger		uint32	`json:"report_trigger"`
+	VolumeThresholdFlags	uint8	`json:"volume_threshold_flags"`
+	VolumeThresholdTotal	uint64	`json:"volume_threshold_total"`
+	VolumeThresholdUplink	uint64	`json:"volume_threshold_uplink"`
+	VolumeThresholdDownlink	uint64	`json:"volume_threshold_downlink"`
+	VolumeQuotaFlags	uint8	`json:"volume_quota_flags"`
+	VolumeQuotaTotal	uint64	`json:"volume_quota_total"`
+	VolumeQuotaUplink	uint64	`json:"volume_quota_uplink"`
+	VolumeQuotaDownlink	uint64	`json:"volume_quota_downlink"`
+	TotalOctets		uint64	`json:"volume_total_octet"`
+	UplinkOctets		uint64	`json:"volume_uplink_octet"`
+	DownlinkOctets		uint64	`json:"volume_downlink_octet"`
+	TotalPackets		uint64	`json:"volume_total_packet"`
+	UplinkPackets		uint64	`json:"volume_uplink_packet"`
+	DownlinkPackets		uint64	`json:"volume_downlink_packet"`
+}
+
+func ListUrrMapContents(m *ebpf.Map, a *ebpf.Map) ([]UrrMapElement, error) {
+	if m.Type() != ebpf.Array || a.Type() != ebpf.Array {
+		return nil, fmt.Errorf("map %s or %s is not an array", m, a)
+	}
+
+	contextMap := make([]UrrMapElement, 0)
+	mapInfo, _ := m.Info()
+
+	var info UrrInfo
+	var acc  UrrAcc
+	for i := uint32(0); i < mapInfo.MaxEntries; i++ {
+		err := m.Lookup(i, unsafe.Pointer(&info))
+		if err != nil {
+			return nil, err
+		}
+		err = a.Lookup(i, unsafe.Pointer(&acc))
+		if err != nil {
+			return nil, err
+		}
+		contextMap = append(contextMap,
+			UrrMapElement{
+				Id:           i,
+				MeasMethod:	info.MeasMethod,
+				MeasInfo:	info.MeasInfo,
+				ReportTrigger:  (uint32(info.RepTri5)<<16) |
+					(uint32(info.RepTri6)<<8) |
+					(uint32(info.RepTri7)),
+				VolumeThresholdFlags:	info.VolThresholdFlags,
+				VolumeThresholdTotal:	info.VolThresholdTotal,
+				VolumeThresholdUplink:	info.VolThresholdUplink,
+				VolumeThresholdDownlink:info.VolThresholdDownlink,
+				VolumeQuotaFlags:	info.VolQuotaFlags,
+				VolumeQuotaTotal:	info.VolQuotaTotal,
+				VolumeQuotaUplink:	info.VolQuotaUplink,
+				VolumeQuotaDownlink:	info.VolQuotaDownlink,
+				TotalOctets:		acc.TotalOctets,
+				UplinkOctets:		acc.UlOctets,
+				DownlinkOctets:		acc.DlOctets,
+				TotalPackets:		acc.TotalPkts,
+				UplinkPackets:		acc.UlPkts,
+				DownlinkPackets:	acc.DlPkts,
+			},
+		)
+	}
+
+	return contextMap, nil
+}

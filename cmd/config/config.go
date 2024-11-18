@@ -20,6 +20,7 @@ type UpfConfig struct {
 	N3Address         string   `mapstructure:"n3_address" validate:"ipv4" json:"n3_address"`
 	GtpPeer           []string `mapstructure:"gtp_peer" validate:"omitempty,dive,hostname_port" json:"gtp_peer"`
 	EchoInterval      uint32   `mapstructure:"echo_interval" validate:"min=1" json:"echo_interval"`
+	UrrMapSize        uint32   `mapstructure:"urr_map_size" validate:"min=1" json:"urr_map_size"`
 	QerMapSize        uint32   `mapstructure:"qer_map_size" validate:"min=1" json:"qer_map_size"`
 	FarMapSize        uint32   `mapstructure:"far_map_size" validate:"min=1" json:"far_map_size"`
 	PdrMapSize        uint32   `mapstructure:"pdr_map_size" validate:"min=1" json:"pdr_map_size"`
@@ -32,6 +33,7 @@ type UpfConfig struct {
 	FTEIDPool         uint32   `mapstructure:"teid_pool" json:"teid_pool"`
 	FeatureUEIP       bool     `mapstructure:"feature_ueip" json:"feature_ueip"`
 	FeatureFTUP       bool     `mapstructure:"feature_ftup" json:"feature_ftup"`
+	UrrBufferSize     uint32   `mapstructure:"urr_buffer_size" validate:"min=1" json:"urr_buffer_size"`
 }
 
 func init() {
@@ -46,6 +48,7 @@ func init() {
 	pflag.String("n3addr", "127.0.0.1", "Address for communication over N3 interface")
 	pflag.StringArray("peer", []string{}, "Address of GTP peer")
 	pflag.Uint32("echo", 10, "Interval of sending echo requests in seconds")
+	pflag.Uint32("urrsize", 1024, "Size of the URR ebpf map")
 	pflag.Uint32("qersize", 1024, "Size of the QER ebpf map")
 	pflag.Uint32("farsize", 1024, "Size of the FAR ebpf map")
 	pflag.Uint32("pdrsize", 1024, "Size of the PDR ebpf map")
@@ -58,6 +61,7 @@ func init() {
 	pflag.Bool("ftup", false, "Enable or disable FTUP feature")
 	pflag.String("ueippool", "10.60.0.0/24", "IP pool for UEIP feature")
 	pflag.Uint32("teidpool", 65535, "TEID pool for FTUP feature")
+	pflag.Uint32("urrbuffer", 4096, "Per CPU buffer size for receiving usage report from XDP program")
 	pflag.Parse()
 
 	// Bind flag errors only when flag is nil, and we ignore empty cli args
@@ -70,6 +74,7 @@ func init() {
 	_ = v.BindPFlag("n3_address", pflag.Lookup("n3addr"))
 	_ = v.BindPFlag("gtp_peer", pflag.Lookup("peer"))
 	_ = v.BindPFlag("echo_interval", pflag.Lookup("echo"))
+	_ = v.BindPFlag("urr_map_size", pflag.Lookup("urrsize"))
 	_ = v.BindPFlag("qer_map_size", pflag.Lookup("qersize"))
 	_ = v.BindPFlag("far_map_size", pflag.Lookup("farsize"))
 	_ = v.BindPFlag("pdr_map_size", pflag.Lookup("pdrsize"))
@@ -82,6 +87,7 @@ func init() {
 	_ = v.BindPFlag("feature_ftup", pflag.Lookup("ftup"))
 	_ = v.BindPFlag("ueip_pool", pflag.Lookup("ueippool"))
 	_ = v.BindPFlag("teid_pool", pflag.Lookup("teidpool"))
+	_ = v.BindPFlag("urr_buffer_size", pflag.Lookup("urrbuffer"))
 
 	v.SetDefault("interface_name", "lo")
 	v.SetDefault("xdp_attach_mode", "generic")
@@ -91,6 +97,7 @@ func init() {
 	v.SetDefault("metrics_address", ":9090")
 	v.SetDefault("n3_address", "127.0.0.1")
 	v.SetDefault("echo_interval", 10)
+	v.SetDefault("urr_map_size", 1024)
 	v.SetDefault("qer_map_size", 1024)
 	v.SetDefault("far_map_size", 1024)
 	v.SetDefault("pdr_map_size", 1024)
@@ -103,6 +110,7 @@ func init() {
 	v.SetDefault("feature_ftup", false)
 	v.SetDefault("ueip_pool", "10.60.0.0/24")
 	v.SetDefault("teid_pool", 65535)
+	v.SetDefault("urr_buffer_size", 4096)
 
 	v.SetConfigFile(*configPath)
 

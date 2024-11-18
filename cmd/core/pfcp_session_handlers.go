@@ -44,6 +44,7 @@ func HandlePfcpSessionEstablishmentRequest(conn *PfcpConnection, msg message.Mes
 
 	err = func() error {
 		mapOperations := conn.mapOperations
+		reportManager := conn.ReportManager
 		for _, far := range req.CreateFAR {
 			farInfo, err := composeFarInfo(far, conn.n3Address.To4(), ebpf.FarInfo{})
 			if err != nil {
@@ -77,8 +78,24 @@ func HandlePfcpSessionEstablishmentRequest(conn *PfcpConnection, msg message.Mes
 			}
 		}
 
+		for _, urr := range req.CreateURR {
+			urrInfo := ebpf.UrrInfo{}
+			urrId, err := urr.URRID()
+			if err != nil {
+				return fmt.Errorf("URR ID missing")
+			}
+			updateUrr(&urrInfo, urr)
+			log.Info().Msgf("Saving URR info to session: %d, %+v, addr=%s", urrId, urrInfo, addr)
+			if internalId, err := reportManager.NewUrr(urrId, urrInfo, session.RemoteSEID, addr); err == nil {
+				session.NewUrr(urrId, internalId, urrInfo)
+			} else {
+				log.Info().Msgf("Can't put URR: %s", err.Error())
+				return err
+			}
+		}
+		
 		for _, pdr := range req.CreatePDR {
-			// PDR should be created last, because we need to reference FARs and QERs global id
+			// PDR should be created last, because we need to reference FARs, QERs and URRs global id
 			pdrId, err := pdr.PDRID()
 			if err != nil {
 				continue
@@ -141,6 +158,7 @@ func HandlePfcpSessionDeletionRequest(conn *PfcpConnection, msg message.Message,
 		return message.NewSessionDeletionResponse(0, 0, 0, req.Sequence(), 0, newIeNodeID(conn.nodeId), ie.NewCause(ie.CauseSessionContextNotFound)), nil
 	}
 	mapOperations := conn.mapOperations
+	reportManager := conn.ReportManager
 	pdrContext := NewPDRCreationContext(session, conn.ResourceManager)
 	for _, pdrInfo := range session.PDRs {
 		if err := pdrContext.deletePDR(pdrInfo, mapOperations); err != nil {
@@ -148,14 +166,20 @@ func HandlePfcpSessionDeletionRequest(conn *PfcpConnection, msg message.Message,
 			return message.NewSessionDeletionResponse(0, 0, 0, req.Sequence(), 0, newIeNodeID(conn.nodeId), ie.NewCause(ie.CauseRuleCreationModificationFailure)), err
 		}
 	}
-	for id := range session.FARs {
-		if err := mapOperations.DeleteFar(id); err != nil {
+	for _, sUrrInfo := range session.FARs {
+		if err := mapOperations.DeleteFar(sUrrInfo.GlobalId); err != nil {
 			PfcpMessageRxErrors.WithLabelValues(msg.MessageTypeName(), causeToString(ie.CauseRuleCreationModificationFailure)).Inc()
 			return message.NewSessionDeletionResponse(0, 0, 0, req.Sequence(), 0, newIeNodeID(conn.nodeId), ie.NewCause(ie.CauseRuleCreationModificationFailure)), err
 		}
 	}
-	for id := range session.QERs {
-		if err := mapOperations.DeleteQer(id); err != nil {
+	for _, sQerInfo := range session.QERs {
+		if err := mapOperations.DeleteQer(sQerInfo.GlobalId); err != nil {
+			PfcpMessageRxErrors.WithLabelValues(msg.MessageTypeName(), causeToString(ie.CauseRuleCreationModificationFailure)).Inc()
+			return message.NewSessionDeletionResponse(0, 0, 0, req.Sequence(), 0, newIeNodeID(conn.nodeId), ie.NewCause(ie.CauseRuleCreationModificationFailure)), err
+		}
+	}
+	for _, sUrrInfo := range session.URRs {
+		if err := reportManager.DeleteUrr(sUrrInfo.GlobalId); err != nil {
 			PfcpMessageRxErrors.WithLabelValues(msg.MessageTypeName(), causeToString(ie.CauseRuleCreationModificationFailure)).Inc()
 			return message.NewSessionDeletionResponse(0, 0, 0, req.Sequence(), 0, newIeNodeID(conn.nodeId), ie.NewCause(ie.CauseRuleCreationModificationFailure)), err
 		}
@@ -209,6 +233,7 @@ func HandlePfcpSessionModificationRequest(conn *PfcpConnection, msg message.Mess
 
 	err := func() error {
 		mapOperations := conn.mapOperations
+		reportManager := conn.ReportManager
 
 		for _, far := range req.CreateFAR {
 			farInfo, err := composeFarInfo(far, conn.n3Address.To4(), ebpf.FarInfo{})
@@ -298,6 +323,51 @@ func HandlePfcpSessionModificationRequest(conn *PfcpConnection, msg message.Mess
 			}
 		}
 
+		for _, urr := range req.CreateURR {
+			urrInfo := ebpf.UrrInfo{}
+			urrId, err := urr.URRID()
+			if err != nil {
+				return fmt.Errorf("URR ID missing")
+			}
+			updateUrr(&urrInfo, urr)
+			log.Info().Msgf("Saving URR info to session: %d, %+v", urrId, urrInfo)
+			if internalId, err := reportManager.NewUrr(urrId, urrInfo, session.RemoteSEID, addr); err == nil {
+				session.NewUrr(urrId, internalId, urrInfo)
+			} else {
+				log.Info().Msgf("Can't put URR: %s", err.Error())
+				return err
+			}
+		}
+
+		for _, urr := range req.UpdateURR {
+			urrId, err := urr.URRID() // Probably will be used as ebpf map key
+			if err != nil {
+				return fmt.Errorf("URR ID missing")
+			}
+			sUrrInfo := session.GetUrr(urrId)
+			updateUrr(&sUrrInfo.UrrInfo, urr)
+			log.Info().Msgf("Updating URR ID: %d, URR Info: %+v", urrId, sUrrInfo)
+			session.UpdateUrr(urrId, sUrrInfo.UrrInfo)
+			if err := reportManager.UpdateUrr(sUrrInfo.GlobalId, sUrrInfo.UrrInfo); err != nil {
+				log.Info().Msgf("Can't update URR: %s", err.Error())
+				return err
+			}
+		}
+
+		for _, urr := range req.RemoveURR {
+			urrId, err := urr.URRID()
+			if err != nil {
+				return fmt.Errorf("URR ID missing")
+			}
+			log.Info().Msgf("Removing URR ID: %d", urrId)
+			sUrrInfo := session.RemoveUrr(urrId)
+			reportManager.DeleteUrr(sUrrInfo.GlobalId)
+			if err := reportManager.DeleteUrr(sUrrInfo.GlobalId); err != nil {
+				log.Info().Msgf("Can't remove URR: %s", err.Error())
+				return err
+			}
+		}
+
 		for _, pdr := range req.CreatePDR {
 			// PDR should be created last, because we need to reference FARs and QERs global id
 			pdrId, err := pdr.PDRID()
@@ -366,6 +436,19 @@ func HandlePfcpSessionModificationRequest(conn *PfcpConnection, msg message.Mess
 	modResp := message.NewSessionModificationResponse(0, 0, session.RemoteSEID, req.Sequence(), 0, additionalIEs...)
 	PfcpMessageRxErrors.WithLabelValues(msg.MessageTypeName(), causeToString(ie.CauseRequestAccepted)).Inc()
 	return modResp, nil
+}
+
+func HandlePfcpSessionReportResponse(conn *PfcpConnection, msg message.Message, addr string) (message.Message, error) {
+	srresp := msg.(*message.SessionReportResponse)
+	cause, err := srresp.Cause.Cause()
+	if err != nil {
+		log.Warn().Msgf("Got SR Response with invalid Cause: %s, from: %s", err, addr)
+		return nil, err
+	} else {
+		log.Debug().Msgf("Got SR Response with Cause: %d, from: %s", cause, addr)
+	}
+	return nil, err
+	
 }
 
 func convertErrorToIeCause(err error) *ie.IE {
@@ -512,6 +595,54 @@ func updateQer(qerInfo *ebpf.QerInfo, qer *ie.IE) {
 	}
 	qerInfo.StartUL = 0
 	qerInfo.StartDL = 0
+}
+
+func updateUrr(urrInfo *ebpf.UrrInfo, urr *ie.IE) {
+
+	measMethod, err := urr.MeasurementMethod()
+	if err == nil {
+		urrInfo.MeasMethod = measMethod
+	}
+	repTri, err := urr.ReportingTriggers()
+	if (err == nil) {
+		urrInfo.RepTri5 = repTri[0];
+		urrInfo.RepTri6 = repTri[1];
+		urrInfo.RepTri7 = repTri[2];
+	}
+	measInfo, err := urr.MeasurementInformation()
+	if (err == nil) {
+		urrInfo.MeasInfo = measInfo
+	}
+	volTres, err := urr.VolumeThreshold()
+	if (err == nil) {
+		urrInfo.VolThresholdFlags = volTres.Flags
+		urrInfo.VolThresholdTotal = volTres.TotalVolume
+		urrInfo.VolThresholdUplink = volTres.UplinkVolume
+		urrInfo.VolThresholdDownlink = volTres.DownlinkVolume
+	}
+	volQuota, err := urr.VolumeQuota()
+	if (err == nil) {
+		urrInfo.VolQuotaFlags = volQuota.Flags
+		urrInfo.VolQuotaTotal = volQuota.TotalVolume
+		urrInfo.VolQuotaUplink = volQuota.UplinkVolume
+		urrInfo.VolQuotaDownlink = volQuota.DownlinkVolume
+	}
+	timeThres, err := urr.TimeThreshold()
+	if (err == nil) {
+		urrInfo.TimeThreshold = uint32(timeThres.Milliseconds())
+	}
+	timeQuota, err := urr.TimeQuota()
+	if (err == nil) {
+		urrInfo.TimeQuota = uint32(timeQuota.Milliseconds())
+	}
+	quotaValidity, err := urr.QuotaValidityTime()
+	if (err == nil) {
+		urrInfo.QuotaValidity = uint32(quotaValidity.Milliseconds())
+	}
+	quotaHolding, err := urr.QuotaHoldingTime()
+	if (err == nil) {
+		urrInfo.QuotaHolding = uint32(quotaHolding.Milliseconds())
+	}
 }
 
 func GetTransportLevelMarking(far *ie.IE) (uint16, error) {

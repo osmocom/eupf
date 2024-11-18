@@ -92,7 +92,12 @@ func HandlePfcpAssociationSetupRequest(conn *PfcpConnection, msg message.Message
 	// Add or replace RemoteNode to NodeAssociationMap
 	conn.NodeAssociations[addr] = remoteNode
 	log.Info().Msgf("Saving new association: %+v", remoteNode)
-	featuresOctets := []uint8{0, 0, 0}
+	featuresOctets := []uint8{
+		0,
+		0,
+		0x10,		// MNOP
+		0x04,		// VTIME
+	}
 	if config.Conf.FeatureFTUP {
 		featuresOctets[0] = setBit(featuresOctets[0], 4)
 	}

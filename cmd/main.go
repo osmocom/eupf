@@ -47,7 +47,7 @@ func main() {
 	}
 
 	if config.Conf.EbpfMapResize {
-		if err := bpfObjects.ResizeAllMaps(config.Conf.QerMapSize, config.Conf.FarMapSize, config.Conf.PdrMapSize); err != nil {
+		if err := bpfObjects.ResizeAllMaps(config.Conf.UrrMapSize, config.Conf.QerMapSize, config.Conf.FarMapSize, config.Conf.PdrMapSize); err != nil {
 			log.Fatal().Msgf("Failed to set ebpf map sizes: %s", err)
 		}
 	}
@@ -89,14 +89,22 @@ func main() {
 		message.MsgTypeSessionEstablishmentRequest: core.HandlePfcpSessionEstablishmentRequest,
 		message.MsgTypeSessionDeletionRequest:      core.HandlePfcpSessionDeletionRequest,
 		message.MsgTypeSessionModificationRequest:  core.HandlePfcpSessionModificationRequest,
+		message.MsgTypeSessionReportResponse:       core.HandlePfcpSessionReportResponse, 
 	}
 
-	pfcpConn, err := core.CreatePfcpConnection(config.Conf.PfcpAddress, pfcpHandlers, config.Conf.PfcpNodeId, config.Conf.N3Address, bpfObjects, resourceManager)
+	pfcpReportManager, err := core.CreatePfcpReportManager(bpfObjects)
+	if err != nil {
+		log.Fatal().Msgf("Could not create PFCP report manager: %s", err.Error())
+	}
+
+	pfcpConn, err := core.CreatePfcpConnection(config.Conf.PfcpAddress, pfcpHandlers, config.Conf.PfcpNodeId, config.Conf.N3Address, bpfObjects, resourceManager, pfcpReportManager)
 	if err != nil {
 		log.Fatal().Msgf("Could not create PFCP connection: %s", err.Error())
 	}
+	go pfcpReportManager.Run(pfcpConn)
 	go pfcpConn.Run()
 	defer pfcpConn.Close()
+	defer pfcpReportManager.Close()
 
 	ForwardPlaneStats := ebpf.UpfXdpActionStatistic{
 		BpfObjects: bpfObjects,

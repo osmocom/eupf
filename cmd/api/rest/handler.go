@@ -84,6 +84,13 @@ func (h *ApiHandler) initDefaultRoutes(group *gin.RouterGroup) {
 		qerMap.PUT(":id", h.setQerValue)
 	}
 
+	urrMap := group.Group("urr_map")
+	{
+		urrMap.GET("", h.listUrrMapContent)
+		urrMap.GET(":id", h.getUrrValue)
+		urrMap.PUT(":id", h.setUrrValue)
+	}
+
 	farMap := group.Group("far_map")
 	{
 		farMap.GET(":id", h.getFarValue)
